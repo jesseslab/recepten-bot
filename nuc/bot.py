@@ -1,0 +1,347 @@
+"""
+bot.py — Telegram bot handlers for recepten workflow
+"""
+import json
+import logging
+import os
+from datetime import date, timedelta
+
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    Application, CommandHandler, MessageHandler,
+    CallbackQueryHandler, ContextTypes, filters
+)
+from telegram.constants import ParseMode
+
+import db
+import claude_api
+import vps_push
+
+logger = logging.getLogger(__name__)
+
+GROUP_ID = int(os.environ["TELEGRAM_GROUP_ID"])
+
+DAYS_NL = ["Maandag", "Dinsdag", "Woensdag", "Donderdag", "Vrijdag", "Zaterdag", "Zondag"]
+
+# In-memory state for current proposal session
+# (persisted to DB, this is just for the active conversation)
+_pending_proposals: dict = {}  # week_start -> list of recipes
+
+
+def get_week_start() -> str:
+    """Return ISO date string of the current week's Monday."""
+    today = date.today()
+    monday = today - timedelta(days=today.weekday())
+    return monday.isoformat()
+
+
+def format_proposals(recipes: list) -> str:
+    lines = ["🍽️ *Deze week: 10 recepten*\n"]
+    lines.append("Kies 5 tot 7 nummers\\. Stuur ze als: `1 3 5 7 9`\n")
+
+    type_icons = {
+        "vlees": "🥩", "vis": "🐟", "vega": "🌱", "gevogelte": "🍳"
+    }
+
+    for r in recipes:
+        num = r["nummer"]
+        icon = type_icons.get(r["type"], "🍴")
+        wildcard = " 🌍" if r.get("wildcard") else ""
+        serieus = " 👨‍🍳" if r.get("serieus") else ""
+        gf = "✅" if r["gluten"] == "geen" else ("⚠️" if r["gluten"] == "aanpasbaar" else "❌")
+        stars = {"makkelijk": "⭐", "gemiddeld": "⭐⭐", "moeilijk": "⭐⭐⭐"}.get(r["moeilijkheid"], "⭐")
+
+        lines.append(
+            f"*{num}\\. {escape(r['naam'])}* {icon}{wildcard}{serieus}\n"
+            f"   {escape(r['beschrijving'])}\n"
+            f"   {stars} · {escape(str(r['tijd_minuten']))} min · GF: {gf}\n"
+        )
+
+    lines.append("\n_🌍 \\= wildcard \\| 👨‍🍳 \\= serieus koken \\| ⚠️ GF \\= aanpasbaar_")
+    return "\n".join(lines)
+
+
+def format_weekly_overview(plan: dict, recipes_by_name: dict) -> str:
+    lines = [f"📅 *Weekmenu {escape(plan['week_start'])}*\n"]
+    for day, recipe in plan["days"].items():
+        name = recipe["naam"]
+        icon = {"vlees": "🥩", "vis": "🐟", "vega": "🌱", "gevogelte": "🍳"}.get(recipe.get("type", ""), "🍴")
+        tijd = recipe.get("tijd_minuten", "?")
+        lines.append(f"*{day}:* {icon} {escape(name)} \\({tijd} min\\)")
+    lines.append("\n_Stuur /recept \\<dag\\> voor het volledige recept_")
+    lines.append("_Stuur /swap \\<dag1\\> \\<dag2\\> om te wisselen_")
+    return "\n".join(lines)
+
+
+def format_recipe(recipe: dict) -> str:
+    lines = [f"👨‍🍳 *{escape(recipe['naam'])}*\n"]
+
+    if recipe.get("gluten") == "aanpasbaar":
+        lines.append(f"⚠️ _GF tip: {escape(recipe.get('gluten_tip', 'gebruik GF variant'))}_\n")
+
+    lines.append("*Ingrediënten \\(4 personen\\):*")
+    for ing in recipe.get("ingredienten", []):
+        eenheid = ing.get("eenheid", "")
+        hoeveelheid = ing.get("hoeveelheid", "")
+        lines.append(f"• {hoeveelheid}{eenheid} {escape(ing['naam'])}")
+
+    lines.append("\n*Bereiding:*")
+    for i, stap in enumerate(recipe.get("bereidingswijze", []), 1):
+        lines.append(f"{i}\\. {escape(stap)}")
+
+    if recipe.get("tip"):
+        lines.append(f"\n💡 _{escape(recipe['tip'])}_")
+
+    return "\n".join(lines)
+
+
+def escape(text: str) -> str:
+    """Escape special chars for Telegram MarkdownV2."""
+    special = r"_*[]()~`>#+-=|{}.!"
+    return "".join(f"\\{c}" if c in special else c for c in str(text))
+
+
+def escape_shopping_list(text: str) -> str:
+    """Escape MarkdownV2 special chars in shopping list, preserving *bold* section headers."""
+    import re
+    lines = []
+    for line in text.split('\n'):
+        # Preserve *bold* section headers — escape everything else on that line
+        m = re.match(r'^(\*)(.*?)(\*)$', line.strip())
+        if m:
+            lines.append(f"*{escape(m.group(2))}*")
+        else:
+            lines.append(escape(line))
+    return '\n'.join(lines)
+
+
+async def send_proposals(app: Application):
+    """Called by scheduler on Tuesday morning."""
+    week_start = get_week_start()
+    logger.info(f"send_proposals: starting for week {week_start}")
+
+    await app.bot.send_message(
+        chat_id=GROUP_ID,
+        text="🍳 *Tijd voor het weekmenu\\!*\nEven nadenken\\.\\.\\.",
+        parse_mode=ParseMode.MARKDOWN_V2
+    )
+
+    logger.info("send_proposals: calling Claude API for proposals")
+    top_picks = await db.get_top_picks()
+    recent_picks = await db.get_recent_picks()
+    recipes = await claude_api.generate_proposals(top_picks, recent_picks)
+    logger.info(f"send_proposals: Claude returned {len(recipes)} recipes")
+
+    _pending_proposals[week_start] = recipes
+    await db.save_proposals(week_start, recipes)
+
+    text = format_proposals(recipes)
+    await app.bot.send_message(
+        chat_id=GROUP_ID,
+        text=text,
+        parse_mode=ParseMode.MARKDOWN_V2
+    )
+
+
+async def handle_picks(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle user reply with picked recipe numbers."""
+    text = update.message.text.strip()
+    week_start = get_week_start()
+    # Parse numbers from message like "1 3 5 7 9" or "1,3,5,7,9"
+    import re
+    numbers = [int(n) for n in re.findall(r'\d+', text) if 1 <= int(n) <= 10]
+
+    if len(numbers) < 2:
+        return  # Not a picks message, ignore
+
+    proposals = _pending_proposals.get(week_start)
+    if not proposals:
+        # Try to load from DB
+        plan_row = await db.get_current_plan(week_start)
+        if plan_row:
+            proposals = json.loads(plan_row["proposals_json"])
+            _pending_proposals[week_start] = proposals
+
+    if not proposals:
+        await update.message.reply_text("Geen actieve receptenlijst gevonden. Stuur /genereer om te starten.")
+        return
+
+    picked = [r for r in proposals if r["nummer"] in numbers]
+
+    await update.message.reply_text("✅ Lekker\\! Even het weekmenu en de boodschappenlijst maken\\.\\.\\.", parse_mode=ParseMode.MARKDOWN_V2)
+
+    plan, shopping_list = await claude_api.generate_plan_and_shopping(picked, week_start)
+    await db.save_picks(week_start, ",".join(map(str, numbers)), plan, shopping_list)
+    await db.record_picks(week_start, picked)
+
+    # Send weekly overview
+    recipes_by_name = {r["naam"]: r for r in picked}
+    overview = format_weekly_overview(plan, recipes_by_name)
+    await update.message.reply_text(overview, parse_mode=ParseMode.MARKDOWN_V2)
+
+    # Send shopping list
+    await update.message.reply_text(escape_shopping_list(shopping_list), parse_mode=ParseMode.MARKDOWN_V2)
+
+    # Push to VPS
+    try:
+        await vps_push.push_plan_to_vps(plan, picked, shopping_list)
+    except Exception as e:
+        logger.warning(f"VPS push failed: {e}")
+
+    # Defrost reminder for tomorrow if needed
+    await schedule_defrost_check(context.application, plan)
+
+
+async def cmd_genereer(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Manual trigger: /genereer"""
+    actual_id = update.effective_chat.id
+    logger.info(f"cmd_genereer: chat_id={actual_id}, expected GROUP_ID={GROUP_ID}, match={actual_id == GROUP_ID}")
+    if actual_id != GROUP_ID:
+        logger.warning(f"cmd_genereer blocked: chat_id {actual_id} != GROUP_ID {GROUP_ID}")
+        return
+    try:
+        await send_proposals(context.application)
+    except Exception as e:
+        logger.exception(f"cmd_genereer: send_proposals failed: {e}")
+        await update.message.reply_text("Er ging iets mis bij het genereren. Check de logs.")
+
+
+async def cmd_recept(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/recept <dag> — show full recipe for a day"""
+    if not context.args:
+        await update.message.reply_text("Gebruik: /recept Maandag")
+        return
+
+    day = context.args[0].capitalize()
+    week_start = get_week_start()
+    plan_row = await db.get_current_plan(week_start)
+
+    if not plan_row or not plan_row.get("plan_json"):
+        await update.message.reply_text("Geen weekmenu gevonden voor deze week.")
+        return
+
+    plan = json.loads(plan_row["plan_json"])
+    recipe = plan["days"].get(day)
+
+    if not recipe:
+        await update.message.reply_text(f"Geen recept gevonden voor {day}.")
+        return
+
+    await update.message.reply_text(format_recipe(recipe), parse_mode=ParseMode.MARKDOWN_V2)
+
+
+async def cmd_swap(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/swap Maandag Dinsdag — swap two days"""
+    if len(context.args) != 2:
+        await update.message.reply_text("Gebruik: /swap Maandag Dinsdag")
+        return
+
+    day1 = context.args[0].capitalize()
+    day2 = context.args[1].capitalize()
+    week_start = get_week_start()
+
+    success = await db.swap_days(week_start, day1, day2)
+    if success:
+        # Re-push updated plan to VPS
+        plan_row = await db.get_current_plan(week_start)
+        plan = json.loads(plan_row["plan_json"])
+        try:
+            await vps_push.push_plan_to_vps(plan, [], plan_row.get("shopping_list", ""))
+        except Exception as e:
+            logger.warning(f"VPS push after swap failed: {e}")
+
+        await update.message.reply_text(
+            f"✅ {escape(day1)} en {escape(day2)} omgewisseld\\!",
+            parse_mode=ParseMode.MARKDOWN_V2
+        )
+    else:
+        await update.message.reply_text("Kon niet wisselen. Controleer de dagnamen.")
+
+
+async def cmd_lijst(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/lijst — resend shopping list"""
+    week_start = get_week_start()
+    plan_row = await db.get_current_plan(week_start)
+
+    if not plan_row or not plan_row.get("shopping_list"):
+        await update.message.reply_text("Geen boodschappenlijst gevonden voor deze week.")
+        return
+
+    await update.message.reply_text(escape_shopping_list(plan_row["shopping_list"]), parse_mode=ParseMode.MARKDOWN_V2)
+
+
+async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/menu — show this week's overview"""
+    week_start = get_week_start()
+    plan_row = await db.get_current_plan(week_start)
+
+    if not plan_row or not plan_row.get("plan_json"):
+        await update.message.reply_text("Geen weekmenu gevonden. Stuur /genereer om te starten.")
+        return
+
+    plan = json.loads(plan_row["plan_json"])
+    await update.message.reply_text(format_weekly_overview(plan, {}), parse_mode=ParseMode.MARKDOWN_V2)
+
+
+async def send_daily_reminder(app: Application):
+    """Called by scheduler every evening at 18:00."""
+    week_start = get_week_start()
+    plan_row = await db.get_current_plan(week_start)
+
+    if not plan_row or not plan_row.get("plan_json"):
+        return
+
+    plan = json.loads(plan_row["plan_json"])
+    today = DAYS_NL[date.today().weekday()]
+    tomorrow = DAYS_NL[(date.today().weekday() + 1) % 7]
+
+    today_recipe = plan["days"].get(today)
+    tomorrow_recipe = plan["days"].get(tomorrow)
+
+    if not today_recipe:
+        return
+
+    icon = {"vlees": "🥩", "vis": "🐟", "vega": "🌱", "gevogelte": "🍳"}.get(today_recipe.get("type", ""), "🍴")
+    msg = f"{icon} *Vanavond:* {escape(today_recipe['naam'])}\n_/recept {today} voor de bereiding_"
+
+    # Defrost reminder
+    if tomorrow_recipe and tomorrow_recipe.get("type") in ("vlees", "vis", "gevogelte"):
+        msg += f"\n\n🧊 *Vergeet niet:* haal het vlees voor morgen \\({escape(tomorrow_recipe['naam'])}\\) uit de vriezer\\!"
+
+    await app.bot.send_message(chat_id=GROUP_ID, text=msg, parse_mode=ParseMode.MARKDOWN_V2)
+
+
+async def send_shopping_reminder(app: Application):
+    """Thursday 14:00 — resend shopping list."""
+    week_start = get_week_start()
+    plan_row = await db.get_current_plan(week_start)
+
+    if not plan_row or not plan_row.get("shopping_list"):
+        return
+
+    await app.bot.send_message(
+        chat_id=GROUP_ID,
+        text="🛒 *Boodschappen reminder\\!*\nJe doet vandaag boodschappen\\. Hier de lijst:",
+        parse_mode=ParseMode.MARKDOWN_V2
+    )
+    await app.bot.send_message(
+        chat_id=GROUP_ID,
+        text=escape_shopping_list(plan_row["shopping_list"]),
+        parse_mode=ParseMode.MARKDOWN_V2
+    )
+
+
+async def schedule_defrost_check(app: Application, plan: dict):
+    """After picks are received, schedule defrost reminders."""
+    # This is handled in the daily reminder — no extra scheduling needed
+    pass
+
+
+def register_handlers(app: Application):
+    app.add_handler(CommandHandler("genereer", cmd_genereer))
+    app.add_handler(CommandHandler("recept", cmd_recept))
+    app.add_handler(CommandHandler("swap", cmd_swap))
+    app.add_handler(CommandHandler("lijst", cmd_lijst))
+    app.add_handler(CommandHandler("menu", cmd_menu))
+    # Catch all text messages to detect pick replies
+    app.add_handler(MessageHandler(filters.TEXT & filters.Chat(GROUP_ID), handle_picks))

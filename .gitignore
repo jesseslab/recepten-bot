@@ -1,0 +1,16 @@
+# Secrets
+.env
+.env.save
+.env.local
+
+# Claude Code settings (may contain tokens in allow-list)
+.claude/
+
+# Runtime data
+nuc/data/
+vps/data/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
