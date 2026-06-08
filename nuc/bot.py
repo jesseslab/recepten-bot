@@ -476,33 +476,23 @@ async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def send_daily_reminder(app: Application):
-    """Called by scheduler every evening at 18:00."""
+    """Called by scheduler every evening at 18:00. Only sends when defrosting is needed."""
     plan_row = await db.get_most_recent_plan()
 
     if not plan_row or not plan_row.get("plan_json"):
         return
 
     plan = json.loads(plan_row["plan_json"])
-    today = DAYS_NL[date.today().weekday()]
     tomorrow = DAYS_NL[(date.today().weekday() + 1) % 7]
-
-    today_recipe = plan["days"].get(today)
     tomorrow_recipe = plan["days"].get(tomorrow)
 
-    if not today_recipe:
+    if not tomorrow_recipe or tomorrow_recipe.get("type") not in ("vlees", "vis", "gevogelte"):
         return
-
-    icon = {"vlees": "🥩", "vis": "🐟", "vega": "🌱", "gevogelte": "🍳"}.get(today_recipe.get("type", ""), "🍴")
-    msg = f"{icon} *Vanavond:* {escape(today_recipe['naam'])}\n_/vandaag voor het volledige recept_ · [website]({WEBAPP_URL})"
-
-    if tomorrow_recipe and tomorrow_recipe.get("type") in ("vlees", "vis", "gevogelte"):
-        msg += f"\n\n🧊 *Vergeet niet:* haal het vlees voor morgen \\({escape(tomorrow_recipe['naam'])}\\) uit de vriezer\\!"
 
     await app.bot.send_message(
         chat_id=GROUP_ID,
-        text=msg,
-        parse_mode=ParseMode.MARKDOWN_V2,
-        reply_markup=build_rating_keyboard(plan_row["week_start"], today)
+        text=f"🧊 *Vergeet niet:* haal het vlees voor morgen \\({escape(tomorrow_recipe['naam'])}\\) uit de vriezer\\!",
+        parse_mode=ParseMode.MARKDOWN_V2
     )
 
 
