@@ -67,15 +67,22 @@ uit peulvruchten, eieren, kaas, tofu, tempeh of noten.
 """
 
 
-async def generate_proposals(top_picks: list, recent_picks: list) -> list:
+async def generate_proposals(top_picks: list, recent_picks: list, blacklist: list = None,
+                             liked: list = None, disliked: list = None) -> list:
     """Phase 1: Generate 10 lightweight proposals (no ingredients/steps). Fast."""
     learning_context = ""
     if top_picks:
         favs = ", ".join([f"{r['recipe_name']} ({r['times_picked']}x)" for r in top_picks[:5]])
         learning_context += f"\nFAVORIETEN (vaker voorstellen): {favs}"
+    if liked:
+        learning_context += f"\nEERDER LEKKER GEVONDEN 👍 (meer van dit soort): {', '.join(liked[:8])}"
     if recent_picks:
         recent = ", ".join(recent_picks[:8])
         learning_context += f"\nRECENT GEKOOKT (vermijd herhaling): {recent}"
+    if disliked:
+        learning_context += f"\nMINDER LEKKER GEVONDEN 👎 (minder voorstellen of varieer): {', '.join(disliked[:8])}"
+    if blacklist:
+        learning_context += f"\nNOOIT MEER VOORSTELLEN 🚫: {', '.join(blacklist)}"
 
     prompt = f"""{FAMILY_CONTEXT}
 {learning_context}

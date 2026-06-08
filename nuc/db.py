@@ -49,6 +49,19 @@ async def init_db():
                 day_to TEXT NOT NULL,
                 swapped_at TEXT DEFAULT (datetime('now'))
             );
+
+            CREATE TABLE IF NOT EXISTS blacklist (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                recipe_name TEXT NOT NULL UNIQUE,
+                added_at TEXT DEFAULT (datetime('now'))
+            );
+
+            CREATE TABLE IF NOT EXISTS ratings (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                recipe_name TEXT NOT NULL,
+                rating TEXT NOT NULL,              -- 'up', 'down', 'never'
+                rated_at TEXT DEFAULT (datetime('now'))
+            );
         """)
         await db.commit()
 
@@ -171,3 +184,57 @@ async def swap_days(week_start: str, day_from: str, day_to: str) -> bool:
         await db.commit()
 
     return True
+
+
+async def add_to_blacklist(recipe_name: str):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT OR IGNORE INTO blacklist (recipe_name) VALUES (?)",
+            (recipe_name,)
+        )
+        await db.execute("DELETE FROM favourites WHERE recipe_name = ?", (recipe_name,))
+        await db.commit()
+
+
+async def get_blacklist() -> list:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("SELECT recipe_name FROM blacklist") as cursor:
+            rows = await cursor.fetchall()
+            return [r[0] for r in rows]
+
+
+async def add_rating(recipe_name: str, rating: str):
+    """rating: 'up', 'down', 'never'"""
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "INSERT INTO ratings (recipe_name, rating) VALUES (?, ?)",
+            (recipe_name, rating)
+        )
+        if rating == "never":
+            await db.execute(
+                "INSERT OR IGNORE INTO blacklist (recipe_name) VALUES (?)", (recipe_name,)
+            )
+            await db.execute("DELETE FROM favourites WHERE recipe_name = ?", (recipe_name,))
+        await db.commit()
+
+
+async def get_liked_recipes(limit: int = 10) -> list:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("""
+            SELECT recipe_name,
+                   SUM(CASE WHEN rating='up' THEN 1 ELSE 0 END) as ups,
+                   SUM(CASE WHEN rating='down' THEN 1 ELSE 0 END) as downs
+            FROM ratings WHERE rating IN ('up','down')
+            GROUP BY recipe_name HAVING ups > downs
+            ORDER BY ups DESC LIMIT ?
+        """, (limit,)) as cursor:
+            return [r[0] for r in await cursor.fetchall()]
+
+
+async def get_disliked_recipes(limit: int = 10) -> list:
+    async with aiosqlite.connect(DB_PATH) as db:
+        async with db.execute("""
+            SELECT recipe_name FROM ratings WHERE rating='down'
+            GROUP BY recipe_name ORDER BY COUNT(*) DESC LIMIT ?
+        """, (limit,)) as cursor:
+            return [r[0] for r in await cursor.fetchall()]

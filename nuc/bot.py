@@ -108,6 +108,14 @@ def escape_shopping_list(text: str) -> str:
     return '\n'.join(lines)
 
 
+def build_rating_keyboard(week_start: str, day: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton("👍 Lekker", callback_data=f"ru_{week_start}_{day}"),
+        InlineKeyboardButton("👎 Viel tegen", callback_data=f"rd_{week_start}_{day}"),
+        InlineKeyboardButton("🚫 Nooit meer", callback_data=f"rn_{week_start}_{day}"),
+    ]])
+
+
 def build_proposal_keyboard(recipes: list, selected: set) -> InlineKeyboardMarkup:
     buttons = []
     for r in recipes:
@@ -141,8 +149,11 @@ async def send_proposals(app: Application):
 
     top_picks = await db.get_top_picks()
     recent_picks = await db.get_recent_picks()
+    blacklist = await db.get_blacklist()
+    liked = await db.get_liked_recipes()
+    disliked = await db.get_disliked_recipes()
     logger.info("send_proposals: calling Claude API for proposals")
-    recipes = await claude_api.generate_proposals(top_picks, recent_picks)
+    recipes = await claude_api.generate_proposals(top_picks, recent_picks, blacklist, liked, disliked)
     logger.info(f"send_proposals: received {len(recipes)} proposals")
 
     _pending_proposals[week_start] = recipes
@@ -272,6 +283,38 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif data == "subcancel":
         await query.edit_message_reply_markup(reply_markup=None)
 
+    # --- Ratings: 👍 👎 🚫 ---
+    elif data.startswith("ru_") or data.startswith("rd_") or data.startswith("rn_"):
+        parts = data.split("_", 2)  # ["ru", "2026-06-08", "Maandag"]
+        if len(parts) != 3:
+            return
+        prefix, ws, day = parts
+
+        plan_row = await db.get_current_plan(ws)
+        if not plan_row or not plan_row.get("plan_json"):
+            await query.answer("Plan niet meer gevonden.", show_alert=True)
+            return
+
+        plan = json.loads(plan_row["plan_json"])
+        recipe = plan["days"].get(day)
+        if not recipe:
+            await query.answer("Recept niet gevonden.", show_alert=True)
+            return
+
+        name = recipe["naam"]
+        if prefix == "ru":
+            await db.add_rating(name, "up")
+            await query.edit_message_reply_markup(reply_markup=None)
+            await query.answer(f"👍 Genoteerd!", show_alert=False)
+        elif prefix == "rd":
+            await db.add_rating(name, "down")
+            await query.edit_message_reply_markup(reply_markup=None)
+            await query.answer("👎 Onthouden — wordt minder voorgesteld.", show_alert=False)
+        elif prefix == "rn":
+            await db.add_rating(name, "never")
+            await query.edit_message_reply_markup(reply_markup=None)
+            await query.answer(f"🚫 {name} staat op de nooit-meer-lijst.", show_alert=True)
+
 
 async def cmd_genereer(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/genereer — manually trigger proposal generation"""
@@ -327,7 +370,11 @@ async def cmd_vandaag(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Geen recept voor vandaag ({today}).")
         return
 
-    await update.message.reply_text(format_recipe(recipe), parse_mode=ParseMode.MARKDOWN_V2)
+    await update.message.reply_text(
+        format_recipe(recipe),
+        parse_mode=ParseMode.MARKDOWN_V2,
+        reply_markup=build_rating_keyboard(week_start, today)
+    )
 
 
 async def cmd_swap(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -450,7 +497,12 @@ async def send_daily_reminder(app: Application):
     if tomorrow_recipe and tomorrow_recipe.get("type") in ("vlees", "vis", "gevogelte"):
         msg += f"\n\n🧊 *Vergeet niet:* haal het vlees voor morgen \\({escape(tomorrow_recipe['naam'])}\\) uit de vriezer\\!"
 
-    await app.bot.send_message(chat_id=GROUP_ID, text=msg, parse_mode=ParseMode.MARKDOWN_V2)
+    await app.bot.send_message(
+        chat_id=GROUP_ID,
+        text=msg,
+        parse_mode=ParseMode.MARKDOWN_V2,
+        reply_markup=build_rating_keyboard(week_start, today)
+    )
 
 
 async def send_shopping_reminder(app: Application):
