@@ -68,8 +68,7 @@ uit peulvruchten, eieren, kaas, tofu, tempeh of noten.
 
 
 async def generate_proposals(top_picks: list, recent_picks: list) -> list:
-    """Generate 10 recipe proposals with learning context."""
-
+    """Phase 1: Generate 10 lightweight proposals (no ingredients/steps). Fast."""
     learning_context = ""
     if top_picks:
         favs = ", ".join([f"{r['recipe_name']} ({r['times_picked']}x)" for r in top_picks[:5]])
@@ -81,7 +80,7 @@ async def generate_proposals(top_picks: list, recent_picks: list) -> list:
     prompt = f"""{FAMILY_CONTEXT}
 {learning_context}
 
-Genereer precies 10 recepten voor deze week. Mix de types zoals beschreven.
+Genereer precies 10 receptvoorstellen. Alleen naam en omschrijving — GEEN ingrediënten of bereidingswijze.
 
 Geef je antwoord ALLEEN als een JSON array, geen andere tekst, geen markdown:
 [
@@ -89,38 +88,27 @@ Geef je antwoord ALLEEN als een JSON array, geen andere tekst, geen markdown:
     "nummer": 1,
     "naam": "Naam van het recept",
     "type": "vlees|vis|vega|gevogelte",
-    "wildcard": true/false,
-    "serieus": true/false,
-    "keuken": "Italiaans|Koreaans|etc",
-    "tijd_minuten": 30,
+    "wildcard": true,
+    "serieus": false,
+    "keuken": "Koreaans",
+    "tijd_minuten": 40,
     "moeilijkheid": "makkelijk|gemiddeld|moeilijk",
     "gluten": "geen|aanpasbaar|bevat",
-    "gluten_tip": "gebruik GF pasta" (alleen als aanpasbaar),
-    "beschrijving": "Één zin beschrijving",
-    "ingredienten": [
-      {{"naam": "kipfilet", "hoeveelheid": 480, "eenheid": "g"}},
-      ...
-    ],
-    "bereidingswijze": [
-      "Stap 1...",
-      "Stap 2...",
-      ...
-    ],
-    "tip": "optionele kooktip"
-  }},
-  ...
+    "gluten_tip": "gebruik GF sojasaus",
+    "beschrijving": "Één zin beschrijving"
+  }}
 ]
 """
 
     message = await client.messages.create(
         model="claude-sonnet-4-6",
-        max_tokens=8000,
+        max_tokens=3000,
         messages=[{"role": "user", "content": prompt}]
     )
 
     raw = message.content[0].text.strip()
-    logger.info(f"generate_proposals: {message.usage.input_tokens} in / {message.usage.output_tokens} out tokens")
-    # Strip markdown fences if present
+    logger.info(f"generate_proposals: {message.usage.input_tokens} in / {message.usage.output_tokens} out, stop={message.stop_reason}")
+
     if raw.startswith("```"):
         raw = raw.split("```")[1]
         if raw.startswith("json"):
@@ -130,21 +118,88 @@ Geef je antwoord ALLEEN als een JSON array, geen andere tekst, geen markdown:
     return json.loads(raw)
 
 
-async def generate_plan_and_shopping(picked_recipes: list, week_start: str) -> tuple[dict, str]:
-    """Generate weekly plan with day assignments and shopping list."""
-
+async def generate_full_recipes_and_shopping(picked_proposals: list, week_start: str) -> tuple[dict, str, list]:
+    """Phase 2: Generate full recipes for picked proposals + shopping list + day plan."""
     days = ["Maandag", "Dinsdag", "Woensdag", "Donderdag", "Vrijdag", "Zaterdag", "Zondag"]
-    n = len(picked_recipes)
-    # Assign serious meals to weekend, rest spread across week
-    serious = [r for r in picked_recipes if r.get("serieus")]
-    other = [r for r in picked_recipes if not r.get("serieus")]
 
-    # Build day assignments
+    proposals_summary = [
+        {
+            "nummer": r["nummer"],
+            "naam": r["naam"],
+            "type": r.get("type", ""),
+            "keuken": r.get("keuken", ""),
+            "serieus": r.get("serieus", False),
+            "gluten": r.get("gluten", "geen"),
+        }
+        for r in picked_proposals
+    ]
+
+    prompt = f"""{FAMILY_CONTEXT}
+
+Genereer volledige recepten (ingrediënten + bereiding) voor deze {len(picked_proposals)} gerechten,
+plus een gecombineerde boodschappenlijst voor alle recepten samen.
+
+Gerechten:
+{json.dumps(proposals_summary, ensure_ascii=False)}
+
+Geef ALLEEN als JSON, geen andere tekst, geen markdown:
+{{
+  "recepten": [
+    {{
+      "nummer": 1,
+      "naam": "...",
+      "type": "vlees|vis|vega|gevogelte",
+      "wildcard": false,
+      "serieus": false,
+      "keuken": "...",
+      "tijd_minuten": 30,
+      "moeilijkheid": "makkelijk|gemiddeld|moeilijk",
+      "gluten": "geen|aanpasbaar|bevat",
+      "gluten_tip": "...",
+      "beschrijving": "...",
+      "ingredienten": [{{"naam": "kipfilet", "hoeveelheid": 600, "eenheid": "g"}}],
+      "bereidingswijze": ["Stap 1...", "Stap 2..."],
+      "tip": "..."
+    }}
+  ],
+  "boodschappen": {{
+    "vlees_vis": [{{"naam": "...", "hoeveelheid": "600g", "gf": false}}],
+    "groente_fruit": [],
+    "zuivel_eieren": [],
+    "droog_blik": [],
+    "kruiden_sauzen": [],
+    "overig": []
+  }}
+}}
+"""
+
+    message = await client.messages.create(
+        model="claude-sonnet-4-6",
+        max_tokens=12000,
+        messages=[{"role": "user", "content": prompt}]
+    )
+
+    raw = message.content[0].text.strip()
+    logger.info(f"generate_full_recipes: {message.usage.input_tokens} in / {message.usage.output_tokens} out, stop={message.stop_reason}")
+
+    if raw.startswith("```"):
+        raw = raw.split("```")[1]
+        if raw.startswith("json"):
+            raw = raw[4:]
+    raw = raw.strip()
+
+    result = json.loads(raw)
+    full_recipes = result["recepten"]
+    shopping_text = format_shopping_list(result["boodschappen"])
+
+    # Assign days: serious meals to weekend, rest spread across week
+    serious = [r for r in full_recipes if r.get("serieus")]
+    other = [r for r in full_recipes if not r.get("serieus")]
+
     assigned = {}
     day_index = 0
     for recipe in other:
-        # Skip weekend days for non-serious meals if possible
-        while days[day_index] in ["Zaterdag", "Zondag"] and serious and day_index < 5:
+        while day_index < 5 and days[day_index] in ["Zaterdag", "Zondag"] and serious:
             day_index += 1
         if day_index < len(days):
             assigned[days[day_index]] = recipe
@@ -156,49 +211,51 @@ async def generate_plan_and_shopping(picked_recipes: list, week_start: str) -> t
                 assigned[day] = recipe
                 break
 
-    plan = {
-        "week_start": week_start,
-        "days": assigned
-    }
+    plan = {"week_start": week_start, "days": assigned}
+    return plan, shopping_text, full_recipes
 
-    # Generate shopping list via Claude
-    recipes_text = json.dumps(picked_recipes, ensure_ascii=False)
 
-    prompt = f"""Gegeven deze recepten voor 4 personen:
-{recipes_text}
+async def generate_single_recipe(proposal: dict) -> dict:
+    """Generate one full recipe from a lightweight proposal (used by /vervang)."""
+    prompt = f"""{FAMILY_CONTEXT}
 
-Maak een gecombineerde boodschappenlijst. Combineer dubbele ingrediënten op.
-Markeer items die een glutenvrije variant nodig hebben met [GF].
-Gebruik praktische supermarktmaten (bijv. "1 blik tomaten (400g)" niet "380g tomaten").
+Genereer één volledig recept voor: {proposal['naam']} ({proposal.get('keuken', '')}, {proposal.get('type', '')})
 
-Geef je antwoord ALLEEN als JSON, geen andere tekst:
+Geef ALLEEN als JSON, geen andere tekst:
 {{
-  "vlees_vis": [{{"naam": "...", "hoeveelheid": "480g", "gf": false}}],
-  "groente_fruit": [...],
-  "zuivel_eieren": [...],
-  "droog_blik": [...],
-  "kruiden_sauzen": [...],
-  "overig": [...]
+  "nummer": {proposal.get('nummer', 0)},
+  "naam": "{proposal['naam']}",
+  "type": "{proposal.get('type', '')}",
+  "wildcard": {str(proposal.get('wildcard', False)).lower()},
+  "serieus": {str(proposal.get('serieus', False)).lower()},
+  "keuken": "{proposal.get('keuken', '')}",
+  "tijd_minuten": {proposal.get('tijd_minuten', 30)},
+  "moeilijkheid": "{proposal.get('moeilijkheid', 'gemiddeld')}",
+  "gluten": "{proposal.get('gluten', 'geen')}",
+  "gluten_tip": "{proposal.get('gluten_tip', '')}",
+  "beschrijving": "{proposal.get('beschrijving', '')}",
+  "ingredienten": [{{"naam": "...", "hoeveelheid": 0, "eenheid": "g"}}],
+  "bereidingswijze": ["Stap 1..."],
+  "tip": "..."
 }}
 """
 
     message = await client.messages.create(
         model="claude-sonnet-4-6",
-        max_tokens=3000,
+        max_tokens=2000,
         messages=[{"role": "user", "content": prompt}]
     )
 
     raw = message.content[0].text.strip()
+    logger.info(f"generate_single_recipe ({proposal['naam']}): {message.usage.output_tokens} out tokens")
+
     if raw.startswith("```"):
         raw = raw.split("```")[1]
         if raw.startswith("json"):
             raw = raw[4:]
     raw = raw.strip()
 
-    shopping_data = json.loads(raw)
-    shopping_text = format_shopping_list(shopping_data)
-
-    return plan, shopping_text
+    return json.loads(raw)
 
 
 def format_shopping_list(data: dict) -> str:

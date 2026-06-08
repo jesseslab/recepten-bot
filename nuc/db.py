@@ -135,6 +135,15 @@ async def get_recent_picks(weeks: int = 4) -> list:
             return [r["recipe_name"] for r in rows]
 
 
+async def update_plan_json(week_start: str, plan: dict):
+    async with aiosqlite.connect(DB_PATH) as db:
+        await db.execute(
+            "UPDATE weekly_plans SET plan_json = ? WHERE week_start = ?",
+            (json.dumps(plan, ensure_ascii=False), week_start)
+        )
+        await db.commit()
+
+
 async def swap_days(week_start: str, day_from: str, day_to: str) -> bool:
     """Swap two days in the current plan."""
     plan_row = await get_current_plan(week_start)

@@ -23,13 +23,15 @@ GROUP_ID = int(os.environ["TELEGRAM_GROUP_ID"])
 
 DAYS_NL = ["Maandag", "Dinsdag", "Woensdag", "Donderdag", "Vrijdag", "Zaterdag", "Zondag"]
 
+MIN_PICKS = 2
+MAX_PICKS = 7
+
 # In-memory state for current proposal session
-_pending_proposals: dict = {}  # week_start -> list of recipes
+_pending_proposals: dict = {}  # week_start -> list of lightweight proposals
 _selected: dict = {}           # week_start -> set of selected recipe numbers
 
 
 def get_week_start() -> str:
-    """Return ISO date string of the current week's Monday."""
     today = date.today()
     monday = today - timedelta(days=today.weekday())
     return monday.isoformat()
@@ -37,11 +39,9 @@ def get_week_start() -> str:
 
 def format_proposals(recipes: list) -> str:
     lines = ["🍽️ *Deze week: 10 recepten*\n"]
-    lines.append("Kies 5 tot 7 nummers\\. Stuur ze als: `1 3 5 7 9`\n")
+    lines.append(f"Kies {MIN_PICKS} tot {MAX_PICKS} nummers via de knoppen hieronder\\.\n")
 
-    type_icons = {
-        "vlees": "🥩", "vis": "🐟", "vega": "🌱", "gevogelte": "🍳"
-    }
+    type_icons = {"vlees": "🥩", "vis": "🐟", "vega": "🌱", "gevogelte": "🍳"}
 
     for r in recipes:
         num = r["nummer"]
@@ -61,15 +61,13 @@ def format_proposals(recipes: list) -> str:
     return "\n".join(lines)
 
 
-def format_weekly_overview(plan: dict, recipes_by_name: dict) -> str:
+def format_weekly_overview(plan: dict) -> str:
     lines = [f"📅 *Weekmenu {escape(plan['week_start'])}*\n"]
     for day, recipe in plan["days"].items():
-        name = recipe["naam"]
         icon = {"vlees": "🥩", "vis": "🐟", "vega": "🌱", "gevogelte": "🍳"}.get(recipe.get("type", ""), "🍴")
         tijd = recipe.get("tijd_minuten", "?")
-        lines.append(f"*{day}:* {icon} {escape(name)} \\({tijd} min\\)")
-    lines.append("\n_Stuur /recept \\<dag\\> voor het volledige recept_")
-    lines.append("_Stuur /swap \\<dag1\\> \\<dag2\\> om te wisselen_")
+        lines.append(f"*{day}:* {icon} {escape(recipe['naam'])} \\({tijd} min\\)")
+    lines.append("\n_/recept \\<dag\\> voor het recept · /vandaag voor vandaag · /swap \\<dag1\\> \\<dag2\\> · /vervang \\<dag\\>_")
     return "\n".join(lines)
 
 
@@ -81,9 +79,7 @@ def format_recipe(recipe: dict) -> str:
 
     lines.append("*Ingrediënten \\(4 personen\\):*")
     for ing in recipe.get("ingredienten", []):
-        eenheid = ing.get("eenheid", "")
-        hoeveelheid = ing.get("hoeveelheid", "")
-        lines.append(f"• {hoeveelheid}{eenheid} {escape(ing['naam'])}")
+        lines.append(f"• {ing.get('hoeveelheid', '')}{ing.get('eenheid', '')} {escape(ing['naam'])}")
 
     lines.append("\n*Bereiding:*")
     for i, stap in enumerate(recipe.get("bereidingswijze", []), 1):
@@ -96,27 +92,20 @@ def format_recipe(recipe: dict) -> str:
 
 
 def escape(text: str) -> str:
-    """Escape special chars for Telegram MarkdownV2."""
     special = r"_*[]()~`>#+-=|{}.!"
     return "".join(f"\\{c}" if c in special else c for c in str(text))
 
 
 def escape_shopping_list(text: str) -> str:
-    """Escape MarkdownV2 special chars in shopping list, preserving *bold* section headers."""
     import re
     lines = []
     for line in text.split('\n'):
-        # Preserve *bold* section headers — escape everything else on that line
         m = re.match(r'^(\*)(.*?)(\*)$', line.strip())
         if m:
             lines.append(f"*{escape(m.group(2))}*")
         else:
             lines.append(escape(line))
     return '\n'.join(lines)
-
-
-MIN_PICKS = 2
-MAX_PICKS = 7
 
 
 def build_proposal_keyboard(recipes: list, selected: set) -> InlineKeyboardMarkup:
@@ -140,7 +129,7 @@ def build_proposal_keyboard(recipes: list, selected: set) -> InlineKeyboardMarku
 
 
 async def send_proposals(app: Application):
-    """Called by scheduler on Tuesday morning."""
+    """Called by scheduler on Tuesday morning or via /genereer."""
     week_start = get_week_start()
     logger.info(f"send_proposals: starting for week {week_start}")
 
@@ -150,11 +139,11 @@ async def send_proposals(app: Application):
         parse_mode=ParseMode.MARKDOWN_V2
     )
 
-    logger.info("send_proposals: calling Claude API for proposals")
     top_picks = await db.get_top_picks()
     recent_picks = await db.get_recent_picks()
+    logger.info("send_proposals: calling Claude API for proposals")
     recipes = await claude_api.generate_proposals(top_picks, recent_picks)
-    logger.info(f"send_proposals: Claude returned {len(recipes)} recipes")
+    logger.info(f"send_proposals: received {len(recipes)} proposals")
 
     _pending_proposals[week_start] = recipes
     _selected[week_start] = set()
@@ -171,13 +160,14 @@ async def send_proposals(app: Application):
 
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle inline keyboard button presses for recipe selection."""
+    """Handle all inline keyboard button presses."""
     query = update.callback_query
     await query.answer()
 
     data = query.data
     week_start = get_week_start()
 
+    # --- Recipe selection toggles ---
     if data.startswith("tog_"):
         num = int(data.split("_")[1])
         proposals = _pending_proposals.get(week_start)
@@ -199,10 +189,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = build_proposal_keyboard(proposals, _selected[week_start])
         await query.edit_message_reply_markup(reply_markup=keyboard)
 
+    # --- Not enough selected yet ---
     elif data == "noop":
         n = len(_selected.get(week_start, set()))
         await query.answer(f"Kies minimaal {MIN_PICKS} recepten ({n}/{MIN_PICKS}).", show_alert=False)
 
+    # --- Confirm selection: generate full recipes + shopping list ---
     elif data == "conf":
         proposals = _pending_proposals.get(week_start)
         selected_nums = _selected.get(week_start, set())
@@ -213,42 +205,84 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         picked = [r for r in proposals if r["nummer"] in selected_nums]
 
-        # Remove keyboard from proposal message
         await query.edit_message_reply_markup(reply_markup=None)
         await query.message.reply_text(
-            "✅ Lekker\\! Even het weekmenu en de boodschappenlijst maken\\.\\.\\.",
+            "✅ Lekker\\! Even de volledige recepten en boodschappenlijst maken\\.\\.\\.",
             parse_mode=ParseMode.MARKDOWN_V2
         )
 
-        plan, shopping_list = await claude_api.generate_plan_and_shopping(picked, week_start)
+        plan, shopping_list, full_recipes = await claude_api.generate_full_recipes_and_shopping(picked, week_start)
         await db.save_picks(week_start, ",".join(map(str, sorted(selected_nums))), plan, shopping_list)
         await db.record_picks(week_start, picked)
 
-        recipes_by_name = {r["naam"]: r for r in picked}
-        overview = format_weekly_overview(plan, recipes_by_name)
-        await query.message.reply_text(overview, parse_mode=ParseMode.MARKDOWN_V2)
+        await query.message.reply_text(format_weekly_overview(plan), parse_mode=ParseMode.MARKDOWN_V2)
         await query.message.reply_text(escape_shopping_list(shopping_list), parse_mode=ParseMode.MARKDOWN_V2)
 
         try:
-            await vps_push.push_plan_to_vps(plan, picked, shopping_list)
+            await vps_push.push_plan_to_vps(plan, full_recipes, shopping_list)
         except Exception as e:
             logger.warning(f"VPS push failed: {e}")
 
         _selected.pop(week_start, None)
         await schedule_defrost_check(context.application, plan)
 
+    # --- Vervang: substitute a day with chosen proposal ---
+    elif data.startswith("sub_"):
+        parts = data.split("_", 2)  # sub_Maandag_3
+        if len(parts) != 3:
+            return
+        _, day, num_str = parts
+        num = int(num_str)
+
+        plan_row = await db.get_current_plan(week_start)
+        if not plan_row:
+            await query.answer("Weekmenu niet gevonden.", show_alert=True)
+            return
+
+        proposals = json.loads(plan_row.get("proposals_json", "[]"))
+        proposal = next((p for p in proposals if p["nummer"] == num), None)
+        if not proposal:
+            await query.answer("Recept niet gevonden.", show_alert=True)
+            return
+
+        await query.edit_message_reply_markup(reply_markup=None)
+        await query.message.reply_text(
+            f"🔄 Even {escape(proposal['naam'])} uitwerken\\.\\.\\.",
+            parse_mode=ParseMode.MARKDOWN_V2
+        )
+
+        full_recipe = await claude_api.generate_single_recipe(proposal)
+
+        plan = json.loads(plan_row["plan_json"])
+        plan["days"][day] = full_recipe
+        shopping_list = plan_row.get("shopping_list", "")
+        await db.update_plan_json(week_start, plan)
+
+        await query.message.reply_text(
+            f"✅ *{escape(day)}* vervangen door *{escape(full_recipe['naam'])}*\\!",
+            parse_mode=ParseMode.MARKDOWN_V2
+        )
+        await query.message.reply_text(format_weekly_overview(plan), parse_mode=ParseMode.MARKDOWN_V2)
+
+        try:
+            await vps_push.push_plan_to_vps(plan, list(plan["days"].values()), shopping_list)
+        except Exception as e:
+            logger.warning(f"VPS push after vervang failed: {e}")
+
+    elif data == "subcancel":
+        await query.edit_message_reply_markup(reply_markup=None)
+
 
 async def cmd_genereer(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Manual trigger: /genereer"""
+    """/genereer — manually trigger proposal generation"""
     actual_id = update.effective_chat.id
     logger.info(f"cmd_genereer: chat_id={actual_id}, expected GROUP_ID={GROUP_ID}, match={actual_id == GROUP_ID}")
     if actual_id != GROUP_ID:
-        logger.warning(f"cmd_genereer blocked: chat_id {actual_id} != GROUP_ID {GROUP_ID}")
         return
     try:
         await send_proposals(context.application)
     except Exception as e:
-        logger.exception(f"cmd_genereer: send_proposals failed: {e}")
+        logger.exception(f"cmd_genereer failed: {e}")
         await update.message.reply_text("Er ging iets mis bij het genereren. Check de logs.")
 
 
@@ -276,8 +310,28 @@ async def cmd_recept(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(format_recipe(recipe), parse_mode=ParseMode.MARKDOWN_V2)
 
 
+async def cmd_vandaag(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/vandaag — show today's recipe"""
+    week_start = get_week_start()
+    plan_row = await db.get_current_plan(week_start)
+
+    if not plan_row or not plan_row.get("plan_json"):
+        await update.message.reply_text("Geen weekmenu gevonden. Stuur /genereer om te starten.")
+        return
+
+    plan = json.loads(plan_row["plan_json"])
+    today = DAYS_NL[date.today().weekday()]
+    recipe = plan["days"].get(today)
+
+    if not recipe:
+        await update.message.reply_text(f"Geen recept voor vandaag ({today}).")
+        return
+
+    await update.message.reply_text(format_recipe(recipe), parse_mode=ParseMode.MARKDOWN_V2)
+
+
 async def cmd_swap(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """/swap Maandag Dinsdag — swap two days"""
+    """/swap <dag1> <dag2> — swap two days"""
     if len(context.args) != 2:
         await update.message.reply_text("Gebruik: /swap Maandag Dinsdag")
         return
@@ -288,11 +342,10 @@ async def cmd_swap(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     success = await db.swap_days(week_start, day1, day2)
     if success:
-        # Re-push updated plan to VPS
         plan_row = await db.get_current_plan(week_start)
         plan = json.loads(plan_row["plan_json"])
         try:
-            await vps_push.push_plan_to_vps(plan, [], plan_row.get("shopping_list", ""))
+            await vps_push.push_plan_to_vps(plan, list(plan["days"].values()), plan_row.get("shopping_list", ""))
         except Exception as e:
             logger.warning(f"VPS push after swap failed: {e}")
 
@@ -302,6 +355,50 @@ async def cmd_swap(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     else:
         await update.message.reply_text("Kon niet wisselen. Controleer de dagnamen.")
+
+
+async def cmd_vervang(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """/vervang <dag> — replace a day with an alternative from proposals"""
+    if not context.args:
+        await update.message.reply_text("Gebruik: /vervang Maandag")
+        return
+
+    day = context.args[0].capitalize()
+    week_start = get_week_start()
+    plan_row = await db.get_current_plan(week_start)
+
+    if not plan_row or not plan_row.get("plan_json"):
+        await update.message.reply_text("Geen weekmenu gevonden.")
+        return
+
+    plan = json.loads(plan_row["plan_json"])
+    if day not in plan["days"]:
+        await update.message.reply_text(f"{day} staat niet in het weekmenu.")
+        return
+
+    proposals = json.loads(plan_row.get("proposals_json", "[]"))
+    used_names = {r["naam"] for r in plan["days"].values()}
+    alternatives = [p for p in proposals if p["naam"] not in used_names]
+
+    if not alternatives:
+        await update.message.reply_text("Geen alternatieven beschikbaar. Doe /genereer voor een nieuw voorstel.")
+        return
+
+    type_icons = {"vlees": "🥩", "vis": "🐟", "vega": "🌱", "gevogelte": "🍳"}
+    buttons = []
+    for r in alternatives[:6]:
+        icon = type_icons.get(r.get("type", ""), "🍴")
+        buttons.append([InlineKeyboardButton(
+            f"{icon} {r['naam'][:35]}",
+            callback_data=f"sub_{day}_{r['nummer']}"
+        )])
+    buttons.append([InlineKeyboardButton("✗ Annuleren", callback_data="subcancel")])
+
+    await update.message.reply_text(
+        f"Wat in plaats van *{escape(day)}* \\({escape(plan['days'][day]['naam'])}\\)?",
+        parse_mode=ParseMode.MARKDOWN_V2,
+        reply_markup=InlineKeyboardMarkup(buttons)
+    )
 
 
 async def cmd_lijst(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -326,7 +423,7 @@ async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     plan = json.loads(plan_row["plan_json"])
-    await update.message.reply_text(format_weekly_overview(plan, {}), parse_mode=ParseMode.MARKDOWN_V2)
+    await update.message.reply_text(format_weekly_overview(plan), parse_mode=ParseMode.MARKDOWN_V2)
 
 
 async def send_daily_reminder(app: Application):
@@ -348,9 +445,8 @@ async def send_daily_reminder(app: Application):
         return
 
     icon = {"vlees": "🥩", "vis": "🐟", "vega": "🌱", "gevogelte": "🍳"}.get(today_recipe.get("type", ""), "🍴")
-    msg = f"{icon} *Vanavond:* {escape(today_recipe['naam'])}\n_/recept {today} voor de bereiding_"
+    msg = f"{icon} *Vanavond:* {escape(today_recipe['naam'])}\n_/vandaag voor het volledige recept_"
 
-    # Defrost reminder
     if tomorrow_recipe and tomorrow_recipe.get("type") in ("vlees", "vis", "gevogelte"):
         msg += f"\n\n🧊 *Vergeet niet:* haal het vlees voor morgen \\({escape(tomorrow_recipe['naam'])}\\) uit de vriezer\\!"
 
@@ -378,15 +474,15 @@ async def send_shopping_reminder(app: Application):
 
 
 async def schedule_defrost_check(app: Application, plan: dict):
-    """After picks are received, schedule defrost reminders."""
-    # This is handled in the daily reminder — no extra scheduling needed
     pass
 
 
 def register_handlers(app: Application):
     app.add_handler(CommandHandler("genereer", cmd_genereer))
     app.add_handler(CommandHandler("recept", cmd_recept))
+    app.add_handler(CommandHandler("vandaag", cmd_vandaag))
     app.add_handler(CommandHandler("swap", cmd_swap))
+    app.add_handler(CommandHandler("vervang", cmd_vervang))
     app.add_handler(CommandHandler("lijst", cmd_lijst))
     app.add_handler(CommandHandler("menu", cmd_menu))
     app.add_handler(CallbackQueryHandler(handle_callback))
