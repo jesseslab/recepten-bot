@@ -20,6 +20,7 @@ import vps_push
 logger = logging.getLogger(__name__)
 
 GROUP_ID = int(os.environ["TELEGRAM_GROUP_ID"])
+WEBAPP_URL = "https://recepten.example.com"
 
 DAYS_NL = ["Maandag", "Dinsdag", "Woensdag", "Donderdag", "Vrijdag", "Zaterdag", "Zondag"]
 
@@ -68,6 +69,7 @@ def format_weekly_overview(plan: dict) -> str:
         tijd = recipe.get("tijd_minuten", "?")
         lines.append(f"*{day}:* {icon} {escape(recipe['naam'])} \\({tijd} min\\)")
     lines.append("\n_/recept \\<dag\\> voor het recept · /vandaag voor vandaag · /swap \\<dag1\\> \\<dag2\\> · /vervang \\<dag\\>_")
+    lines.append(f"\n🌐 [Bekijk op de website]({WEBAPP_URL})")
     return "\n".join(lines)
 
 
@@ -88,6 +90,7 @@ def format_recipe(recipe: dict) -> str:
     if recipe.get("tip"):
         lines.append(f"\n💡 _{escape(recipe['tip'])}_")
 
+    lines.append(f"\n🌐 [Bekijk op de website]({WEBAPP_URL})")
     return "\n".join(lines)
 
 
@@ -492,7 +495,7 @@ async def send_daily_reminder(app: Application):
         return
 
     icon = {"vlees": "🥩", "vis": "🐟", "vega": "🌱", "gevogelte": "🍳"}.get(today_recipe.get("type", ""), "🍴")
-    msg = f"{icon} *Vanavond:* {escape(today_recipe['naam'])}\n_/vandaag voor het volledige recept_"
+    msg = f"{icon} *Vanavond:* {escape(today_recipe['naam'])}\n_/vandaag voor het volledige recept_ · [website]({WEBAPP_URL})"
 
     if tomorrow_recipe and tomorrow_recipe.get("type") in ("vlees", "vis", "gevogelte"):
         msg += f"\n\n🧊 *Vergeet niet:* haal het vlees voor morgen \\({escape(tomorrow_recipe['naam'])}\\) uit de vriezer\\!"
