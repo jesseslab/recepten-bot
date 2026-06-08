@@ -3,6 +3,7 @@ main.py — VPS webhook receiver + data store for webapp
 """
 import json
 import os
+from datetime import date, timedelta
 from pathlib import Path
 from fastapi import FastAPI, HTTPException, Request, Depends
 from fastapi.middleware.cors import CORSMiddleware
@@ -44,12 +45,21 @@ async def receive_plan(request: Request, _=Depends(verify_secret)):
     return {"status": "ok"}
 
 
+def current_week_start() -> str:
+    today = date.today()
+    return (today - timedelta(days=today.weekday())).isoformat()
+
+
 @app.get("/api/plan")
 async def get_plan():
-    """Serve current plan to webapp."""
+    """Serve current plan to webapp. Returns 404 if plan is from a previous week."""
     if not PLAN_FILE.exists():
         raise HTTPException(status_code=404, detail="No plan found")
-    return json.loads(PLAN_FILE.read_text())
+    data = json.loads(PLAN_FILE.read_text())
+    plan_week = data.get("plan", {}).get("week_start") or data.get("week_start")
+    if plan_week and plan_week < current_week_start():
+        raise HTTPException(status_code=404, detail="Plan expired")
+    return data
 
 
 @app.get("/api/health")

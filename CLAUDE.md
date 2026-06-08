@@ -30,7 +30,7 @@ Both sides run via Docker Compose.
 - Containers: `recepten-nginx` (80/443), `recepten-api` (intern), `recepten-certbot`
 - Data: `/opt/recepten/data/current_plan.json` — actief weekplan (overschreven bij elke push)
 - SSL: Let's Encrypt via certbot, auto-renew elke 12h
-- IP-whitelist: `NUC_ALLOWED_IP=**<home-public-ip>**` in `vps/.env` — alleen dit IP mag naar `/api/push`
+- IP-whitelist: `NUC_ALLOWED_IP=<home-public-ip>` in `vps/.env` — alleen dit IP mag naar `/api/push`
 - API endpoints:
   - `POST /api/push` — ontvangt plan van LXC (vereist `X-Secret` header + IP-check)
   - `GET /api/plan` — levert plan aan webapp
@@ -41,7 +41,7 @@ Both sides run via Docker Compose.
 - Telegram bot token: set in `nuc/.env`
 - Anthropic API key: set in `nuc/.env`
 - Shared secret: generated and set in both `nuc/.env` and `vps/.env`
-- NUC_ALLOWED_IP: set to `**<home-public-ip>**` in `vps/.env`
+- NUC_ALLOWED_IP: set to `<home-public-ip>` in `vps/.env`
 - **Deployed and running**
   - LXC 102: `recepten-bot` container up, polling Telegram, scheduler active
   - VPS: `recepten-nginx`, `recepten-api`, `recepten-certbot-1` containers up, HTTPS live
