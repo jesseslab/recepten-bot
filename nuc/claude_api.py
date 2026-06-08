@@ -2,8 +2,11 @@
 claude_api.py — Recipe generation via Anthropic API
 """
 import json
+import logging
 import os
 import anthropic
+
+logger = logging.getLogger(__name__)
 
 client = anthropic.AsyncAnthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 
@@ -11,29 +14,56 @@ FAMILY_CONTEXT = """
 Je genereert weekmenu's voor een Nederlands gezin van 4 personen in Amstelveen.
 
 GEZIN:
-- 4 personen, grote eters
-- Porties: ~120g vlees/vis per persoon per maaltijd (480g totaal)
+- 4 personen, grote eters — beide ouders sporten intensief en verbranden veel
+- Porties: ~150g vlees/vis per persoon per maaltijd (600g totaal)
 - Dochter: glutenallergie — gebruik GF tarwebloem/pasta/paneermeel waar nodig, geef dit aan
 - Eenheden: altijd metrisch (gram, ml, kg, °C)
+- Stijl: clean en gezond maar wel echt lekker — geen dieetrecepten
+
+VLEES & VIS VOORKEUREN:
+- Altijd in huis: gehakt (rund), kipfilet, kippendijen, merguezworstjes
+- Graag: kip, lam, rund, vis (niet zalm), merguez
+- Varkensvlees vermijden als hoofdeiwit — uitzondering: spekjes als smaakmaker (door stamppot/bami),
+  spareribs (af en toe), salami
+- Geen zalm
+
+APPARATUUR (gebruik dit):
+- 2 ovens waarvan 1 combistoomoven
+- Sous vide machine
+- Green Egg (large) BBQ
+- KitchenAid Artisan + gehaktmolen
+- Vitamix blender, Magimix keukenmachine
+- Alle soorten pannen
+- Ruim assortiment kruiden en specerijen
+
+INGREDIËNTEN:
+- Snelle weekdaggerechten: houd het bij ~10 ingrediënten (excl. olie, zout, peper)
+- Serieuze/lange gerechten: geen limiet, mag complex zijn
+- Een paar recepten per week met meer ingrediënten is prima, maar niet allemaal
+- Geen obscure speciale ingrediënten die je alleen online vindt
 
 NOOIT GEBRUIKEN:
 - Orgaanvlees (lever, nier, hart, zwezerik etc.)
 - Slakken / escargot
+- Zalm
 
-WEEKSTRUCTUUR (per week van 7 avonden):
-- 2x vegetarisch (eiwitrijk en vullend)
-- 2x serieus koken (meerdere componenten, langere bereidingstijd, techniek)
-- 1-3x wildcard (échte andere keuken of techniek — NIET Italiaans of Hollands)
-- Rest: snelle gevarieerde weekdagen
+VERDELING VAN DE 10 RECEPTEN:
+- 5x vegetarisch (eiwitrijk en vullend — geen saaie pasta met groente)
+- 5x vlees/vis/gevogelte
+- Maximaal 2x serieus koken (meerdere componenten, langere bereidingstijd, techniek)
+- Mix van snelle weekdaggerechten (30-40 min) en uitgebreidere recepten
+- 1-3x wildcard (échte andere keuken — NIET Italiaans of Hollands)
 
 WILDCARDS: Denk aan Koreaans, Ethiopisch, Peruaans, Libanees, Japans, Mexicaans,
 Vietnamese, Marokkaans, Georgisch etc. — iets wat ze normaal niet koken.
 
-SERIEUS KOKEN: slow-braise, zelfgemaakte GF pasta, hele vis, complexe sauzen,
-meerdere componenten die samenkomen.
+SERIEUS KOKEN: sous vide, slow-braise, Green Egg, zelfgemaakte GF pasta, hele vis,
+complexe sauzen. Maak hier gebruik van de beschikbare apparatuur.
 
 VEGETARISCH: niet gewoon pasta met groente. Denk aan dhal, shakshuka, halloumi,
-paneer, gevulde paprika's, Aziatische tofu gerechten, etc.
+paneer, gevulde paprika's, Aziatische tofu gerechten, linzencurry, etc.
+Geen kant-en-klare vleesvervangers (vegaburgers, gehakt, schnitzels uit pak) — eiwitten
+uit peulvruchten, eieren, kaas, tofu, tempeh of noten.
 """
 
 
@@ -84,11 +114,12 @@ Geef je antwoord ALLEEN als een JSON array, geen andere tekst, geen markdown:
 
     message = await client.messages.create(
         model="claude-sonnet-4-6",
-        max_tokens=16000,
+        max_tokens=8000,
         messages=[{"role": "user", "content": prompt}]
     )
 
     raw = message.content[0].text.strip()
+    logger.info(f"generate_proposals: {message.usage.input_tokens} in / {message.usage.output_tokens} out tokens")
     # Strip markdown fences if present
     if raw.startswith("```"):
         raw = raw.split("```")[1]

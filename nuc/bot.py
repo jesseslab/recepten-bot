@@ -8,7 +8,7 @@ from datetime import date, timedelta
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    Application, CommandHandler, MessageHandler,
+    Application, CommandHandler,
     CallbackQueryHandler, ContextTypes, filters
 )
 from telegram.constants import ParseMode
@@ -24,8 +24,8 @@ GROUP_ID = int(os.environ["TELEGRAM_GROUP_ID"])
 DAYS_NL = ["Maandag", "Dinsdag", "Woensdag", "Donderdag", "Vrijdag", "Zaterdag", "Zondag"]
 
 # In-memory state for current proposal session
-# (persisted to DB, this is just for the active conversation)
 _pending_proposals: dict = {}  # week_start -> list of recipes
+_selected: dict = {}           # week_start -> set of selected recipe numbers
 
 
 def get_week_start() -> str:
@@ -115,6 +115,30 @@ def escape_shopping_list(text: str) -> str:
     return '\n'.join(lines)
 
 
+MIN_PICKS = 2
+MAX_PICKS = 7
+
+
+def build_proposal_keyboard(recipes: list, selected: set) -> InlineKeyboardMarkup:
+    buttons = []
+    for r in recipes:
+        num = r["nummer"]
+        icon = "✅" if num in selected else "⬜"
+        name = r["naam"][:28]
+        buttons.append([InlineKeyboardButton(f"{icon} {num}. {name}", callback_data=f"tog_{num}")])
+
+    n = len(selected)
+    if n >= MIN_PICKS:
+        confirm_label = f"✓ Bevestig ({n} gekozen)"
+        confirm_data = "conf"
+    else:
+        confirm_label = f"Kies nog {MIN_PICKS - n} recept{'en' if MIN_PICKS - n != 1 else ''}..."
+        confirm_data = "noop"
+
+    buttons.append([InlineKeyboardButton(confirm_label, callback_data=confirm_data)])
+    return InlineKeyboardMarkup(buttons)
+
+
 async def send_proposals(app: Application):
     """Called by scheduler on Tuesday morning."""
     week_start = get_week_start()
@@ -133,63 +157,85 @@ async def send_proposals(app: Application):
     logger.info(f"send_proposals: Claude returned {len(recipes)} recipes")
 
     _pending_proposals[week_start] = recipes
+    _selected[week_start] = set()
     await db.save_proposals(week_start, recipes)
 
     text = format_proposals(recipes)
+    keyboard = build_proposal_keyboard(recipes, set())
     await app.bot.send_message(
         chat_id=GROUP_ID,
         text=text,
-        parse_mode=ParseMode.MARKDOWN_V2
+        parse_mode=ParseMode.MARKDOWN_V2,
+        reply_markup=keyboard
     )
 
 
-async def handle_picks(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handle user reply with picked recipe numbers."""
-    text = update.message.text.strip()
+async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle inline keyboard button presses for recipe selection."""
+    query = update.callback_query
+    await query.answer()
+
+    data = query.data
     week_start = get_week_start()
-    # Parse numbers from message like "1 3 5 7 9" or "1,3,5,7,9"
-    import re
-    numbers = [int(n) for n in re.findall(r'\d+', text) if 1 <= int(n) <= 10]
 
-    if len(numbers) < 2:
-        return  # Not a picks message, ignore
+    if data.startswith("tog_"):
+        num = int(data.split("_")[1])
+        proposals = _pending_proposals.get(week_start)
+        if not proposals:
+            await query.answer("Geen actieve receptenlijst. Stuur /genereer.", show_alert=True)
+            return
 
-    proposals = _pending_proposals.get(week_start)
-    if not proposals:
-        # Try to load from DB
-        plan_row = await db.get_current_plan(week_start)
-        if plan_row:
-            proposals = json.loads(plan_row["proposals_json"])
-            _pending_proposals[week_start] = proposals
+        if week_start not in _selected:
+            _selected[week_start] = set()
 
-    if not proposals:
-        await update.message.reply_text("Geen actieve receptenlijst gevonden. Stuur /genereer om te starten.")
-        return
+        if num in _selected[week_start]:
+            _selected[week_start].discard(num)
+        else:
+            if len(_selected[week_start]) >= MAX_PICKS:
+                await query.answer(f"Maximum {MAX_PICKS} recepten geselecteerd.", show_alert=True)
+                return
+            _selected[week_start].add(num)
 
-    picked = [r for r in proposals if r["nummer"] in numbers]
+        keyboard = build_proposal_keyboard(proposals, _selected[week_start])
+        await query.edit_message_reply_markup(reply_markup=keyboard)
 
-    await update.message.reply_text("✅ Lekker\\! Even het weekmenu en de boodschappenlijst maken\\.\\.\\.", parse_mode=ParseMode.MARKDOWN_V2)
+    elif data == "noop":
+        n = len(_selected.get(week_start, set()))
+        await query.answer(f"Kies minimaal {MIN_PICKS} recepten ({n}/{MIN_PICKS}).", show_alert=False)
 
-    plan, shopping_list = await claude_api.generate_plan_and_shopping(picked, week_start)
-    await db.save_picks(week_start, ",".join(map(str, numbers)), plan, shopping_list)
-    await db.record_picks(week_start, picked)
+    elif data == "conf":
+        proposals = _pending_proposals.get(week_start)
+        selected_nums = _selected.get(week_start, set())
 
-    # Send weekly overview
-    recipes_by_name = {r["naam"]: r for r in picked}
-    overview = format_weekly_overview(plan, recipes_by_name)
-    await update.message.reply_text(overview, parse_mode=ParseMode.MARKDOWN_V2)
+        if not proposals or len(selected_nums) < MIN_PICKS:
+            await query.answer(f"Kies minimaal {MIN_PICKS} recepten.", show_alert=True)
+            return
 
-    # Send shopping list
-    await update.message.reply_text(escape_shopping_list(shopping_list), parse_mode=ParseMode.MARKDOWN_V2)
+        picked = [r for r in proposals if r["nummer"] in selected_nums]
 
-    # Push to VPS
-    try:
-        await vps_push.push_plan_to_vps(plan, picked, shopping_list)
-    except Exception as e:
-        logger.warning(f"VPS push failed: {e}")
+        # Remove keyboard from proposal message
+        await query.edit_message_reply_markup(reply_markup=None)
+        await query.message.reply_text(
+            "✅ Lekker\\! Even het weekmenu en de boodschappenlijst maken\\.\\.\\.",
+            parse_mode=ParseMode.MARKDOWN_V2
+        )
 
-    # Defrost reminder for tomorrow if needed
-    await schedule_defrost_check(context.application, plan)
+        plan, shopping_list = await claude_api.generate_plan_and_shopping(picked, week_start)
+        await db.save_picks(week_start, ",".join(map(str, sorted(selected_nums))), plan, shopping_list)
+        await db.record_picks(week_start, picked)
+
+        recipes_by_name = {r["naam"]: r for r in picked}
+        overview = format_weekly_overview(plan, recipes_by_name)
+        await query.message.reply_text(overview, parse_mode=ParseMode.MARKDOWN_V2)
+        await query.message.reply_text(escape_shopping_list(shopping_list), parse_mode=ParseMode.MARKDOWN_V2)
+
+        try:
+            await vps_push.push_plan_to_vps(plan, picked, shopping_list)
+        except Exception as e:
+            logger.warning(f"VPS push failed: {e}")
+
+        _selected.pop(week_start, None)
+        await schedule_defrost_check(context.application, plan)
 
 
 async def cmd_genereer(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -343,5 +389,4 @@ def register_handlers(app: Application):
     app.add_handler(CommandHandler("swap", cmd_swap))
     app.add_handler(CommandHandler("lijst", cmd_lijst))
     app.add_handler(CommandHandler("menu", cmd_menu))
-    # Catch all text messages to detect pick replies
-    app.add_handler(MessageHandler(filters.TEXT & filters.Chat(GROUP_ID), handle_picks))
+    app.add_handler(CallbackQueryHandler(handle_callback))
