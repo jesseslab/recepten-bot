@@ -127,7 +127,8 @@ Geef je antwoord ALLEEN als een JSON array, geen andere tekst, geen markdown:
 
 async def generate_full_recipes_and_shopping(picked_proposals: list, week_start: str) -> tuple[dict, str, list]:
     """Phase 2: Generate full recipes for picked proposals + shopping list + day plan."""
-    days = ["Maandag", "Dinsdag", "Woensdag", "Donderdag", "Vrijdag", "Zaterdag", "Zondag"]
+    # Cooking week runs Fri-Thu (proposals Tuesday, shopping Thursday)
+    days = ["Vrijdag", "Zaterdag", "Zondag", "Maandag", "Dinsdag", "Woensdag", "Donderdag"]
 
     proposals_summary = [
         {
@@ -206,7 +207,7 @@ Geef ALLEEN als JSON, geen andere tekst, geen markdown:
     assigned = {}
     day_index = 0
     for recipe in other:
-        while day_index < 5 and days[day_index] in ["Zaterdag", "Zondag"] and serious:
+        while day_index < len(days) and days[day_index] in ["Zaterdag", "Zondag"] and serious:
             day_index += 1
         if day_index < len(days):
             assigned[days[day_index]] = recipe

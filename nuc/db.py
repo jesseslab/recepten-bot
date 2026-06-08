@@ -99,6 +99,17 @@ async def get_current_plan(week_start: str) -> dict | None:
     return None
 
 
+async def get_most_recent_plan() -> dict | None:
+    """Returns the most recently finalized plan regardless of calendar week."""
+    async with aiosqlite.connect(DB_PATH) as db:
+        db.row_factory = aiosqlite.Row
+        async with db.execute(
+            "SELECT * FROM weekly_plans WHERE plan_json IS NOT NULL ORDER BY finalized_at DESC LIMIT 1"
+        ) as cursor:
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+
 async def record_picks(week_start: str, recipes: list):
     """Log picked recipes for learning."""
     async with aiosqlite.connect(DB_PATH) as db:

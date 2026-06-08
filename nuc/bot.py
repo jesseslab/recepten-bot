@@ -248,12 +248,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _, day, num_str = parts
         num = int(num_str)
 
-        plan_row = await db.get_current_plan(week_start)
-        if not plan_row:
+        sub_plan_row = await db.get_most_recent_plan()
+        if not sub_plan_row:
             await query.answer("Weekmenu niet gevonden.", show_alert=True)
             return
 
-        proposals = json.loads(plan_row.get("proposals_json", "[]"))
+        proposals = json.loads(sub_plan_row.get("proposals_json", "[]"))
         proposal = next((p for p in proposals if p["nummer"] == num), None)
         if not proposal:
             await query.answer("Recept niet gevonden.", show_alert=True)
@@ -267,10 +267,10 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         full_recipe = await claude_api.generate_single_recipe(proposal)
 
-        plan = json.loads(plan_row["plan_json"])
+        plan = json.loads(sub_plan_row["plan_json"])
         plan["days"][day] = full_recipe
-        shopping_list = plan_row.get("shopping_list", "")
-        await db.update_plan_json(week_start, plan)
+        shopping_list = sub_plan_row.get("shopping_list", "")
+        await db.update_plan_json(sub_plan_row["week_start"], plan)
 
         await query.message.reply_text(
             f"✅ *{escape(day)}* vervangen door *{escape(full_recipe['naam'])}*\\!",
@@ -339,8 +339,7 @@ async def cmd_recept(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     day = context.args[0].capitalize()
-    week_start = get_week_start()
-    plan_row = await db.get_current_plan(week_start)
+    plan_row = await db.get_most_recent_plan()
 
     if not plan_row or not plan_row.get("plan_json"):
         await update.message.reply_text("Geen weekmenu gevonden voor deze week.")
@@ -358,8 +357,7 @@ async def cmd_recept(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_vandaag(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/vandaag — show today's recipe"""
-    week_start = get_week_start()
-    plan_row = await db.get_current_plan(week_start)
+    plan_row = await db.get_most_recent_plan()
 
     if not plan_row or not plan_row.get("plan_json"):
         await update.message.reply_text("Geen weekmenu gevonden. Stuur /genereer om te starten.")
@@ -376,7 +374,7 @@ async def cmd_vandaag(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         format_recipe(recipe),
         parse_mode=ParseMode.MARKDOWN_V2,
-        reply_markup=build_rating_keyboard(week_start, today)
+        reply_markup=build_rating_keyboard(plan_row["week_start"], today)
     )
 
 
@@ -388,8 +386,12 @@ async def cmd_swap(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     day1 = context.args[0].capitalize()
     day2 = context.args[1].capitalize()
-    week_start = get_week_start()
+    plan_row = await db.get_most_recent_plan()
+    if not plan_row:
+        await update.message.reply_text("Geen weekmenu gevonden.")
+        return
 
+    week_start = plan_row["week_start"]
     success = await db.swap_days(week_start, day1, day2)
     if success:
         plan_row = await db.get_current_plan(week_start)
@@ -414,8 +416,7 @@ async def cmd_vervang(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     day = context.args[0].capitalize()
-    week_start = get_week_start()
-    plan_row = await db.get_current_plan(week_start)
+    plan_row = await db.get_most_recent_plan()
 
     if not plan_row or not plan_row.get("plan_json"):
         await update.message.reply_text("Geen weekmenu gevonden.")
@@ -453,8 +454,7 @@ async def cmd_vervang(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_lijst(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/lijst — resend shopping list"""
-    week_start = get_week_start()
-    plan_row = await db.get_current_plan(week_start)
+    plan_row = await db.get_most_recent_plan()
 
     if not plan_row or not plan_row.get("shopping_list"):
         await update.message.reply_text("Geen boodschappenlijst gevonden voor deze week.")
@@ -465,8 +465,7 @@ async def cmd_lijst(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """/menu — show this week's overview"""
-    week_start = get_week_start()
-    plan_row = await db.get_current_plan(week_start)
+    plan_row = await db.get_most_recent_plan()
 
     if not plan_row or not plan_row.get("plan_json"):
         await update.message.reply_text("Geen weekmenu gevonden. Stuur /genereer om te starten.")
@@ -478,8 +477,7 @@ async def cmd_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def send_daily_reminder(app: Application):
     """Called by scheduler every evening at 18:00."""
-    week_start = get_week_start()
-    plan_row = await db.get_current_plan(week_start)
+    plan_row = await db.get_most_recent_plan()
 
     if not plan_row or not plan_row.get("plan_json"):
         return
@@ -504,14 +502,13 @@ async def send_daily_reminder(app: Application):
         chat_id=GROUP_ID,
         text=msg,
         parse_mode=ParseMode.MARKDOWN_V2,
-        reply_markup=build_rating_keyboard(week_start, today)
+        reply_markup=build_rating_keyboard(plan_row["week_start"], today)
     )
 
 
 async def send_shopping_reminder(app: Application):
     """Thursday 14:00 — resend shopping list."""
-    week_start = get_week_start()
-    plan_row = await db.get_current_plan(week_start)
+    plan_row = await db.get_most_recent_plan()
 
     if not plan_row or not plan_row.get("shopping_list"):
         return
