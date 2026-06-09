@@ -225,7 +225,16 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             parse_mode=ParseMode.MARKDOWN_V2
         )
 
-        plan, shopping_list, full_recipes = await claude_api.generate_full_recipes_and_shopping(picked, week_start)
+        try:
+            plan, shopping_list, full_recipes = await claude_api.generate_full_recipes_and_shopping(picked, week_start)
+        except Exception as e:
+            logger.error(f"generate_full_recipes_and_shopping failed: {e}")
+            await query.message.reply_text(
+                "❌ Er ging iets mis bij het genereren van de recepten\\. Probeer opnieuw met /genereer\\.",
+                parse_mode=ParseMode.MARKDOWN_V2
+            )
+            return
+
         await db.save_picks(week_start, ",".join(map(str, sorted(selected_nums))), plan, shopping_list)
         await db.record_picks(week_start, picked)
 

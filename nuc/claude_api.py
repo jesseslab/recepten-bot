@@ -183,12 +183,15 @@ Geef ALLEEN als JSON, geen andere tekst, geen markdown:
 
     message = await client.messages.create(
         model="claude-sonnet-4-6",
-        max_tokens=12000,
+        max_tokens=20000,
         messages=[{"role": "user", "content": prompt}]
     )
 
     raw = message.content[0].text.strip()
     logger.info(f"generate_full_recipes: {message.usage.input_tokens} in / {message.usage.output_tokens} out, stop={message.stop_reason}")
+
+    if message.stop_reason == "max_tokens":
+        raise ValueError(f"Claude response truncated (output tokens exhausted)")
 
     if raw.startswith("```"):
         raw = raw.split("```")[1]
