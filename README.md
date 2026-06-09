@@ -17,7 +17,7 @@ VPS (recepten.example.com)          NUC (homelab)
 
 1. Open Telegram, zoek **@BotFather**
 2. Stuur `/newbot`
-3. Geef het een naam: `Weekmenu gebruiker`
+3. Geef het een naam: `Weekmenu `
 4. Geef het een username: `weekmenu_gebruiker_bot` (of iets unieks)
 5. Kopieer het **token** (ziet eruit als `123456789:ABCdef...`)
 
