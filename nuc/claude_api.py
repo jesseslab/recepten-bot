@@ -17,6 +17,7 @@ GEZIN:
 - 4 personen, grote eters — beide ouders sporten intensief en verbranden veel
 - Porties: ~150g vlees/vis per persoon per maaltijd (600g totaal)
 - Dochter: glutenallergie — gebruik GF tarwebloem/pasta/paneermeel waar nodig, geef dit aan
+- Couscous vermijden in GF-versies — GF couscous smaakt niet goed; gebruik rijst, quinoa of aardappel als alternatief
 - Eenheden: altijd metrisch (gram, ml, kg, °C)
 - Stijl: clean en gezond maar wel echt lekker — geen dieetrecepten
 
@@ -53,6 +54,8 @@ VERDELING VAN DE 10 RECEPTEN:
 - Maximaal 2x serieus koken (meerdere componenten, langere bereidingstijd, techniek)
 - Mix van snelle weekdaggerechten (30-40 min) en uitgebreidere recepten
 - 1-3x wildcard (échte andere keuken — NIET Italiaans of Hollands)
+- Reguliere (niet-wildcard) recepten: schroom niet voor Italiaans, Grieks, Spaans,
+  Mediterraans — dit is gewenst en wordt te weinig voorgesteld.
 
 WILDCARDS: Denk aan Koreaans, Ethiopisch, Peruaans, Libanees, Japans, Mexicaans,
 Vietnamese, Marokkaans, Georgisch etc. — iets wat ze normaal niet koken.
