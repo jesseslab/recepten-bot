@@ -184,6 +184,10 @@ Geef ALLEEN als JSON, geen andere tekst, geen markdown:
     "overig": []
   }}
 
+BELANGRIJK voor boodschappenlijst tekst:
+- Gebruik GEEN em-dash (—) of typografische aanhalingstekens in item-namen; gebruik gewone koppeltekens (-) en rechte apostrofs
+- Gebruik GEEN speciale Unicode-tekens in hoeveelheden of namen
+
 BELANGRIJK voor het gf-veld:
 - gf: true ALLEEN als de koper expliciet een glutenvrije variant moet kopen — bijv. GF pasta, GF meel, GF paneermeel/panko, GF sojasaus/tamari, GF bouillonblokjes
 - Vlees, vis, groente, fruit, eieren, rauwe rijst, pure kruiden, melk, kaas zijn VAN NATURE glutenvrij — gf: false voor deze items

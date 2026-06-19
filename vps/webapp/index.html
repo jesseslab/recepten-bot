@@ -646,7 +646,7 @@
       } else if (trimmed.startsWith('•') && current) {
         const gf = trimmed.includes('⚠️ GF');
         const text = trimmed.replace('•', '').replace('⚠️ GF', '').trim();
-        current.items.push({ text, gf, id: btoa(text).slice(0,8) });
+        current.items.push({ text, gf, id: String(Array.from(text).reduce((h,c) => Math.imul(31,h) + c.charCodeAt(0)|0, 0)).replace('-','n') });
       }
     });
     if (current) sections.push(current);
