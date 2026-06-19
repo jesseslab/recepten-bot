@@ -15,7 +15,9 @@ Je genereert weekmenu's voor een Nederlands gezin van 4 personen in Amstelveen.
 
 GEZIN:
 - 4 personen, grote eters — beide ouders sporten intensief en verbranden veel
-- Porties: ~150g vlees/vis per persoon per maaltijd (600g totaal)
+- Porties: ~150g vlees/vis per persoon = netto eetbaar gewicht (600g totaal)
+  → Boneless (kipfilet, gehakt, vis): 600g totaal rauw
+  → Bot-in stukken (kippendijen, spareribs, hele vis): corrigeer voor botverlies (~30-40%) → gebruik 800-900g rauw
 - Dochter: glutenallergie — gebruik GF tarwebloem/pasta/paneermeel waar nodig, geef dit aan
 - Couscous vermijden in GF-versies — GF couscous smaakt niet goed; gebruik rijst, quinoa of aardappel als alternatief
 - Eenheden: altijd metrisch (gram, ml, kg, °C)
@@ -181,6 +183,11 @@ Geef ALLEEN als JSON, geen andere tekst, geen markdown:
     "kruiden_sauzen": [],
     "overig": []
   }}
+
+BELANGRIJK voor het gf-veld:
+- gf: true ALLEEN als de koper expliciet een glutenvrije variant moet kopen — bijv. GF pasta, GF meel, GF paneermeel/panko, GF sojasaus/tamari, GF bouillonblokjes
+- Vlees, vis, groente, fruit, eieren, rauwe rijst, pure kruiden, melk, kaas zijn VAN NATURE glutenvrij — gf: false voor deze items
+- Twijfelgeval: alleen gf: true als het product regulier gluten bevat (sojasaus, paneermeel, gewone bloem etc.)
 }}
 """
 
