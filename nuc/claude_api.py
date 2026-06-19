@@ -20,6 +20,8 @@ GEZIN:
   → Bot-in stukken (kippendijen, spareribs, hele vis): corrigeer voor botverlies (~30-40%) → gebruik 800-900g rauw
 - Dochter: glutenallergie — gebruik GF tarwebloem/pasta/paneermeel waar nodig, geef dit aan
 - Couscous vermijden in GF-versies — GF couscous smaakt niet goed; gebruik rijst, quinoa of aardappel als alternatief
+- GV paneermeel: het gezin maakt dit zelf van GV toastbrood — zet dit NIET op de boodschappenlijst, vermeld in de bereiding "maal GV toastbrood grof voor paneermeel"
+- Panko (regulier) bevat gluten — in recepten aangeven dat dochter zelfgemaakt GV paneermeel gebruikt
 - Eenheden: altijd metrisch (gram, ml, kg, °C)
 - Stijl: clean en gezond maar wel echt lekker — geen dieetrecepten
 
@@ -183,6 +185,11 @@ Geef ALLEEN als JSON, geen andere tekst, geen markdown:
     "kruiden_sauzen": [],
     "overig": []
   }}
+
+BELANGRIJK voor volledigheid boodschappenlijst:
+- Zorg dat ALLE ingrediënten uit ALLE recepten in de boodschappenlijst staan — niets weglaten
+- Groenten, kruiden en sauzen die in meerdere recepten voorkomen: combineer de hoeveelheden en zet ze één keer op de lijst
+- Loop elk recept na voor je de lijst afsluit
 
 BELANGRIJK voor boodschappenlijst tekst:
 - Gebruik GEEN em-dash (—) of typografische aanhalingstekens in item-namen; gebruik gewone koppeltekens (-) en rechte apostrofs
