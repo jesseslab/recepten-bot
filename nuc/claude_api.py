@@ -22,6 +22,8 @@ GEZIN:
 - Couscous vermijden in GF-versies — GF couscous smaakt niet goed; gebruik rijst, quinoa of aardappel als alternatief
 - GV paneermeel: het gezin maakt dit zelf van GV toastbrood — zet dit NIET op de boodschappenlijst, vermeld in de bereiding "maal GV toastbrood grof voor paneermeel"
 - Panko (regulier) bevat gluten — in recepten aangeven dat dochter zelfgemaakt GV paneermeel gebruikt
+- Ponzu bevat sojasaus (tarwe) — gebruik tamari-gebaseerde ponzu of vermeldt dit als aanpassing
+- Sojasaus bevat gluten — altijd tamari als GV alternatief vermelden
 - Eenheden: altijd metrisch (gram, ml, kg, °C)
 - Stijl: clean en gezond maar wel echt lekker — geen dieetrecepten
 
